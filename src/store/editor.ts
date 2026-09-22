@@ -38,10 +38,24 @@ interface HistorySnapshot {
   }[];
 }
 
+interface DocumentSession {
+  id: string;
+  name: string;
+  unsaved: boolean;
+  doc: Document;
+  layers: Layer[];
+  activeLayerId: string | null;
+  selection: Selection | null;
+  history: HistorySnapshot[];
+  historyIndex: number;
+}
+
 interface EditorState {
   doc: Document;
   layers: Layer[];
   activeLayerId: string | null;
+  documents: DocumentSession[];
+  activeDocumentId: string | null;
 
   tool: Tool;
   foreground: string;
@@ -71,7 +85,13 @@ interface EditorState {
   toggleRulers: () => void;
   toggleGrid: () => void;
 
-  newDocument: (w: number, h: number, bg: string) => void;
+  newDocument: (w: number, h: number, bg: string, name?: string) => void;
+  createDocumentFromImage: (name: string, img: HTMLImageElement) => void;
+  openDocumentTab: (session: DocumentSession) => void;
+  switchDocument: (id: string) => void;
+  closeDocument: (id: string) => void;
+  renameDocument: (id: string, name: string) => void;
+  setDocumentDirty: (id: string, dirty: boolean) => void;
   resizeDocument: (w: number, h: number) => void;
 
   addLayer: (opts?: { name?: string; fromImage?: HTMLImageElement }) => Layer;
@@ -198,12 +218,29 @@ function makeBackgroundLayer(w: number, h: number, bg: string): Layer {
 const INITIAL_W = 1200;
 const INITIAL_H = 800;
 
+function buildSession(name: string, doc: Document, layers: Layer[], activeLayerId: string | null, selection: Selection | null, history: HistorySnapshot[], historyIndex: number, unsaved = false): DocumentSession {
+  return {
+    id: uid(),
+    name,
+    unsaved,
+    doc: { ...doc },
+    layers: layers.map((l) => ({ ...l, canvas: l.canvas, adjustments: { ...l.adjustments } })),
+    activeLayerId,
+    selection: selection ? { ...selection } : null,
+    history,
+    historyIndex,
+  };
+}
+
 export const useEditor = create<EditorState>((set, get) => {
   const bgLayer = makeBackgroundLayer(INITIAL_W, INITIAL_H, '#ffffff');
+  const initialSession = buildSession('Document 1', { width: INITIAL_W, height: INITIAL_H, background: '#ffffff' }, [bgLayer], bgLayer.id, null, [], -1, false);
   return {
     doc: { width: INITIAL_W, height: INITIAL_H, background: '#ffffff' },
     layers: [bgLayer],
     activeLayerId: bgLayer.id,
+    documents: [initialSession],
+    activeDocumentId: initialSession.id,
 
     tool: 'move',
     foreground: '#e8873b',
@@ -236,10 +273,12 @@ export const useEditor = create<EditorState>((set, get) => {
 
     bumpPaintTick: () => set((s) => ({ paintTick: s.paintTick + 1 })),
 
-    newDocument: (w, h, bg) => {
+    newDocument: (w, h, bg, name) => {
       const layer = makeBackgroundLayer(w, h, bg);
-      set({
-        doc: { width: w, height: h, background: bg },
+      const nextDoc = { width: w, height: h, background: bg };
+      const nextSession = buildSession(name ?? `Document ${get().documents.length + 1}`, nextDoc, [layer], layer.id, null, [], -1, false);
+      set((s) => ({
+        doc: nextDoc,
         layers: [layer],
         activeLayerId: layer.id,
         selection: null,
@@ -247,8 +286,115 @@ export const useEditor = create<EditorState>((set, get) => {
         historyIndex: -1,
         zoom: 1,
         pan: { x: 0, y: 0 },
-      });
+        documents: [...s.documents, nextSession],
+        activeDocumentId: nextSession.id,
+      }));
       get().pushHistory('New Document');
+    },
+
+    createDocumentFromImage: (name, img) => {
+      const docW = img.width;
+      const docH = img.height;
+      const canvas = createLayerCanvas(docW, docH);
+      canvas.getContext('2d')!.drawImage(img, 0, 0, docW, docH);
+      const layer = {
+        id: uid(),
+        name: 'Background',
+        visible: true,
+        locked: false,
+        opacity: 100,
+        blendMode: 'source-over' as BlendMode,
+        canvas,
+        x: 0,
+        y: 0,
+        adjustments: defaultAdjustments(),
+        isBackground: true,
+      };
+      const nextDoc = { width: docW, height: docH, background: '#ffffff' };
+      const nextSession = buildSession(name, nextDoc, [layer], layer.id, null, [], -1, false);
+      set((s) => ({
+        doc: nextDoc,
+        layers: [layer],
+        activeLayerId: layer.id,
+        selection: null,
+        history: [],
+        historyIndex: -1,
+        zoom: 1,
+        pan: { x: 0, y: 0 },
+        documents: [...s.documents, nextSession],
+        activeDocumentId: nextSession.id,
+      }));
+    },
+
+    openDocumentTab: (session) => {
+      set({
+        doc: { ...session.doc },
+        layers: session.layers,
+        activeLayerId: session.activeLayerId,
+        selection: session.selection,
+        history: session.history,
+        historyIndex: session.historyIndex,
+        activeDocumentId: session.id,
+      });
+    },
+
+    switchDocument: (id) => {
+      const s = get();
+      const session = s.documents.find((d) => d.id === id);
+      if (!session) return;
+      const activeSession = s.documents.find((d) => d.id === s.activeDocumentId);
+      if (activeSession) {
+        activeSession.doc = { ...s.doc };
+        activeSession.layers = s.layers;
+        activeSession.activeLayerId = s.activeLayerId;
+        activeSession.selection = s.selection;
+        activeSession.history = s.history;
+        activeSession.historyIndex = s.historyIndex;
+      }
+      set({
+        doc: { ...session.doc },
+        layers: session.layers,
+        activeLayerId: session.activeLayerId,
+        selection: session.selection,
+        history: session.history,
+        historyIndex: session.historyIndex,
+        activeDocumentId: id,
+      });
+    },
+
+    closeDocument: (id) => {
+      const s = get();
+      if (s.documents.length <= 1) return;
+      const filtered = s.documents.filter((d) => d.id !== id);
+      const nextActive = filtered[filtered.length - 1];
+      if (s.activeDocumentId === id) {
+        set({
+          documents: filtered,
+          activeDocumentId: nextActive.id,
+          doc: { ...nextActive.doc },
+          layers: nextActive.layers,
+          activeLayerId: nextActive.activeLayerId,
+          selection: nextActive.selection,
+          history: nextActive.history,
+          historyIndex: nextActive.historyIndex,
+        });
+      } else {
+        set({ documents: filtered });
+      }
+    },
+
+    renameDocument: (id, name) => {
+      const trimmed = name.trim() || 'Untitled';
+      set((s) => ({
+        documents: s.documents.map((d) => d.id === id ? { ...d, name: trimmed } : d),
+        ...(s.activeDocumentId === id ? { doc: { ...s.doc } } : {}),
+      }));
+    },
+
+    setDocumentDirty: (id, dirty) => {
+      set((s) => ({
+        documents: s.documents.map((d) => d.id === id ? { ...d, unsaved: dirty } : d),
+      }));
     },
 
     resizeDocument: (w, h) => {
@@ -434,7 +580,11 @@ export const useEditor = create<EditorState>((set, get) => {
       const MAX = 40;
       const overflow = trimmed.length - MAX;
       const final = overflow > 0 ? trimmed.slice(overflow) : trimmed;
-      set({ history: final, historyIndex: final.length - 1 });
+      set((state) => ({
+        history: final,
+        historyIndex: final.length - 1,
+        documents: state.documents.map((d) => d.id === state.activeDocumentId ? { ...d, unsaved: true } : d),
+      }));
     },
 
     undo: async () => {

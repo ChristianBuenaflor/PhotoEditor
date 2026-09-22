@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { TopBar } from './components/TopBar';
 import { Toolbar } from './components/Toolbar';
 import { OptionsBar } from './components/OptionsBar';
@@ -11,13 +11,14 @@ import { StatusBar } from './components/StatusBar';
 import { NewDocDialog } from './components/NewDocDialog';
 import { FilterDialog } from './components/FilterDialog';
 import { useEditor } from './store/editor';
-import { hexToRgb, createLayerCanvas } from './lib/utils';
+import { hexToRgb, createLayerCanvas, downloadCanvas } from './lib/utils';
 import type { FilterName } from './lib/filters';
 
 export default function App() {
   const [showNewDoc, setShowNewDoc] = useState(false);
   const [filterDialog, setFilterDialog] = useState<FilterName | null>(null);
   const [showCanvasSize, setShowCanvasSize] = useState(false);
+  const [showSaveAs, setShowSaveAs] = useState(false);
   const [showAbout, setShowAbout] = useState(true);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
 
@@ -26,6 +27,7 @@ export default function App() {
   const setTool = useEditor((s) => s.setTool);
   const swapColors = useEditor((s) => s.swapColors);
   const doc = useEditor((s) => s.doc);
+  const activeDocumentId = useEditor((s) => s.activeDocumentId);
   const setZoom = useEditor((s) => s.setZoom);
   const setPan = useEditor((s) => s.setPan);
   const zoom = useEditor((s) => s.zoom);
@@ -46,6 +48,49 @@ export default function App() {
   const mergeDown = useEditor((s) => s.mergeDown);
   const flattenAll = useEditor((s) => s.flattenAll);
   const bakeAdjustments = useEditor((s) => s.bakeAdjustments);
+
+  const exportDocument = useCallback((type: 'png' | 'jpg' | 'webp', filename?: string, quality = 92, transparency = true, location?: string, saveAsCopy = false) => {
+    const c = createLayerCanvas(doc.width, doc.height);
+    const ctx = c.getContext('2d')!;
+
+    if (type === 'jpg' || (!transparency && type !== 'png')) {
+      ctx.fillStyle = '#ffffff';
+      ctx.fillRect(0, 0, doc.width, doc.height);
+    }
+
+    layers.forEach((l) => {
+      if (!l.visible) return;
+      ctx.save();
+      ctx.globalAlpha = l.opacity / 100;
+      ctx.globalCompositeOperation = l.blendMode;
+      const a = l.adjustments;
+      ctx.filter = [
+        `brightness(${a.brightness}%)`,
+        `contrast(${a.contrast}%)`,
+        `saturate(${a.saturate}%)`,
+        `hue-rotate(${a.hueRotate}deg)`,
+        a.blur > 0 ? `blur(${a.blur}px)` : '',
+        a.invert > 0 ? `invert(${a.invert}%)` : '',
+        a.sepia > 0 ? `sepia(${a.sepia}%)` : '',
+        a.grayscale > 0 ? `grayscale(${a.grayscale}%)` : '',
+      ].filter(Boolean).join(' ');
+      ctx.drawImage(l.canvas, l.x, l.y);
+      ctx.restore();
+    });
+
+    const mime = type === 'jpg' ? 'image/jpeg' : type === 'webp' ? 'image/webp' : 'image/png';
+    const ext = type === 'jpg' ? 'jpg' : type === 'webp' ? 'webp' : 'png';
+    const safeName = (filename || 'pigment').trim() || 'pigment';
+    const baseName = safeName.toLowerCase().endsWith(`.${ext}`) ? safeName.slice(0, -ext.length - 1) : safeName;
+    const finalName = `${baseName}${saveAsCopy ? '-copy' : ''}.${ext}`;
+    const exportQuality = type === 'jpg' || type === 'webp' ? Math.min(1, Math.max(0.1, quality / 100)) : undefined;
+
+    if (location && location.trim()) {
+      console.info(`Save location: ${location.trim()} / ${finalName}`);
+    }
+
+    downloadCanvas(c, finalName, mime, exportQuality);
+  }, [doc.width, doc.height, layers]);
 
   const importImageFile = useCallback((file: File) => {
     if (!file.type.startsWith('image/')) return;
@@ -314,6 +359,8 @@ export default function App() {
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
       if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
+      if (mod && e.key.toLowerCase() === 't') { e.preventDefault(); setTool('move'); return; }
+      if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); setShowSaveAs(true); return; }
       if (mod && e.key === 'a') { e.preventDefault(); handleCommand('select:all'); return; }
       if (mod && e.key === 'd') { e.preventDefault(); handleCommand('select:deselect'); return; }
       if (mod && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_' || e.key === '0')) {
@@ -338,6 +385,20 @@ export default function App() {
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
   }, [undo, redo, setTool, swapColors, setZoom, zoom, handleCommand]);
+
+  useEffect(() => {
+    const onWindowWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      const currentZoom = useEditor.getState().zoom;
+      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
+      const nextZoom = Math.min(16, Math.max(0.05, currentZoom * factor));
+      useEditor.getState().setZoom(nextZoom);
+    };
+
+    window.addEventListener('wheel', onWindowWheel, { passive: false });
+    return () => window.removeEventListener('wheel', onWindowWheel);
+  }, []);
 
   const handleDropFiles = useCallback((files: FileList | null) => {
     const file = files?.[0];
@@ -383,7 +444,163 @@ export default function App() {
       {showNewDoc && <NewDocDialog onClose={() => setShowNewDoc(false)} />}
       {filterDialog && <FilterDialog filter={filterDialog} onClose={() => setFilterDialog(null)} />}
       {showCanvasSize && <CanvasSizeDialog onClose={() => setShowCanvasSize(false)} />}
+      {showSaveAs && (
+        <SaveAsDialog
+          key={activeDocumentId ?? 'new-doc'}
+          onClose={() => setShowSaveAs(false)}
+          onExport={(format, filename, quality, transparency, location, saveAsCopy) => {
+            exportDocument(format, filename, quality, transparency, location, saveAsCopy);
+            setShowSaveAs(false);
+          }}
+        />
+      )}
       {showAbout && <WelcomeOverlay onClose={() => setShowAbout(false)} onNew={() => { setShowAbout(false); setShowNewDoc(true); }} />}
+    </div>
+  );
+}
+
+function getDefaultExportName(name?: string) {
+  const safeName = (name ?? 'pigment').trim() || 'pigment';
+  return safeName.replace(/\.[^.]+$/, '');
+}
+
+function SaveAsDialog({ onClose, onExport }: { onClose: () => void; onExport: (format: 'png' | 'jpg' | 'webp', filename: string, quality: number, transparency: boolean, location: string, saveAsCopy: boolean) => void }) {
+  const activeDocument = useEditor((s) => s.documents.find((d) => d.id === s.activeDocumentId));
+  const [format, setFormat] = useState<'png' | 'jpg' | 'webp'>('png');
+  const [fileName, setFileName] = useState(() => getDefaultExportName(activeDocument?.name));
+  const [quality, setQuality] = useState(92);
+  const [transparent, setTransparent] = useState(true);
+  const [saveLocation, setSaveLocation] = useState('exports');
+  const [saveAsCopy, setSaveAsCopy] = useState(false);
+  const locationInputRef = useRef<HTMLInputElement | null>(null);
+
+  const onSave = () => {
+    onExport(
+      format,
+      fileName.trim() || 'pigment',
+      quality,
+      transparent && format !== 'jpg',
+      saveLocation.trim() || 'exports',
+      saveAsCopy,
+    );
+  };
+
+  const chooseLocation = async () => {
+    if ('showDirectoryPicker' in window) {
+      try {
+        const dir = await (window as typeof window & { showDirectoryPicker?: () => Promise<{ name: string }> }).showDirectoryPicker?.();
+        if (dir?.name) setSaveLocation(dir.name);
+        return;
+      } catch {
+        // ignore browser rejection and fall back to text entry
+      }
+    }
+    locationInputRef.current?.focus();
+    locationInputRef.current?.select();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-[500px] bg-panel border border-border-strong rounded-xl shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 py-5 border-b border-border">
+          <h2 className="font-serif text-[20px] leading-none">Save As</h2>
+        </div>
+        <div className="p-6 space-y-5">
+          <label className="block space-y-2">
+            <span className="text-[10px] uppercase tracking-wider text-fg-dim font-mono">File name</span>
+            <input
+              autoFocus
+              value={fileName}
+              onChange={(e) => setFileName(e.target.value)}
+              className="w-full h-11 rounded-md border border-border bg-transparent px-3 text-base outline-none focus:border-accent"
+            />
+          </label>
+
+          <div className="space-y-3">
+            <div className="flex items-center justify-between">
+              <p className="text-[10px] uppercase tracking-wider text-fg-dim font-mono">Format</p>
+              <span className="text-[11px] font-mono text-fg-dim">{`.${format}`}</span>
+            </div>
+            <select
+              value={format}
+              onChange={(e) => {
+                const next = e.target.value as 'png' | 'jpg' | 'webp';
+                setFormat(next);
+                if (next === 'jpg') setTransparent(false);
+              }}
+              className="w-full h-11 rounded-md border border-border bg-transparent px-3 text-base outline-none focus:border-accent"
+            >
+              <option value="png">PNG</option>
+              <option value="jpg">JPG</option>
+              <option value="webp">WEBP</option>
+            </select>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between text-[10px] uppercase tracking-wider text-fg-dim font-mono">
+              <span>Quality</span>
+              <span>{quality}%</span>
+            </div>
+            <input
+              type="range"
+              min={10}
+              max={100}
+              value={quality}
+              onChange={(e) => setQuality(Number(e.target.value))}
+              className="w-full accent-accent"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <span className="text-[10px] uppercase tracking-wider text-fg-dim font-mono">Save location</span>
+            <div className="flex gap-2">
+              <input
+                ref={locationInputRef}
+                value={saveLocation}
+                onChange={(e) => setSaveLocation(e.target.value)}
+                className="flex-1 h-11 rounded-md border border-border bg-transparent px-3 text-base outline-none focus:border-accent"
+                placeholder="exports"
+              />
+              <button
+                type="button"
+                onClick={chooseLocation}
+                className="px-4 h-11 rounded-md border border-border text-[11px] font-mono text-fg-dim hover:text-fg hover:bg-panel-2"
+              >
+                Browse
+              </button>
+            </div>
+          </div>
+
+          <label className="flex items-center justify-between gap-3 text-sm text-fg-dim">
+            <span>Transparent background</span>
+            <input
+              type="checkbox"
+              checked={transparent && format !== 'jpg'}
+              disabled={format === 'jpg'}
+              onChange={(e) => setTransparent(e.target.checked)}
+              className="h-4 w-4 accent-accent"
+            />
+          </label>
+
+          <label className="flex items-center justify-between gap-3 text-sm text-fg-dim">
+            <span>Save as copy</span>
+            <input
+              type="checkbox"
+              checked={saveAsCopy}
+              onChange={(e) => setSaveAsCopy(e.target.checked)}
+              className="h-4 w-4 accent-accent"
+            />
+          </label>
+
+          <div className="flex justify-end gap-3 pt-2">
+            <button onClick={onClose} className="px-5 py-2.5 rounded-full text-sm font-mono text-fg-dim hover:text-fg transition-colors">Cancel</button>
+            <button onClick={onSave} className="px-5 py-2.5 rounded-full text-sm font-mono bg-accent text-bg hover:bg-accent-2 hover:text-fg transition-colors">Save</button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

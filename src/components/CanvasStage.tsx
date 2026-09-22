@@ -562,6 +562,7 @@ export function CanvasStage() {
   const onWheel = (e: React.WheelEvent) => {
     if (e.ctrlKey || e.metaKey) {
       e.preventDefault();
+      e.stopPropagation();
       const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
       const el = containerRef.current!;
       const rect = el.getBoundingClientRect();
