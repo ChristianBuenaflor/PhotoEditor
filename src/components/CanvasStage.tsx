@@ -66,12 +66,22 @@ export function CanvasStage() {
     const availH = el.clientHeight - pad;
     const z = Math.min(1, Math.min(availW / doc.width, availH / doc.height));
     setZoom(z);
-    setPan({
+    const nextPan = {
       x: (el.clientWidth - doc.width * z) / 2,
       y: (el.clientHeight - doc.height * z) / 2,
-    });
+    };
+    setPan(nextPan);
+    el.scrollLeft = nextPan.x;
+    el.scrollTop = nextPan.y;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.width, doc.height]);
+
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    el.scrollLeft = pan.x;
+    el.scrollTop = pan.y;
+  }, [pan]);
 
   // Composite all layers to display canvas
   useEffect(() => {
@@ -565,13 +575,21 @@ export function CanvasStage() {
       return;
     }
 
-    if (tool === 'move' && activeLayer && !activeLayer.locked) {
-      const deltaX = e.shiftKey ? -e.deltaY : e.deltaX;
-      if (deltaX !== 0) {
-        e.preventDefault();
-        updateLayer(activeLayer.id, { x: activeLayer.x + deltaX / zoom });
-        return;
+    const horizontalScroll = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
+
+    if (tool === 'move' && activeLayer && !activeLayer.locked && horizontalScroll) {
+      e.preventDefault();
+      const delta = e.shiftKey ? -e.deltaY : e.deltaX;
+      if (delta !== 0) {
+        updateLayer(activeLayer.id, { x: activeLayer.x + delta / zoom });
       }
+      return;
+    }
+
+    if (horizontalScroll) {
+      e.preventDefault();
+      setPan({ x: pan.x - (e.deltaX || e.deltaY), y: pan.y });
+      return;
     }
 
     setPan({ x: pan.x - e.deltaX, y: pan.y - e.deltaY });
@@ -605,8 +623,8 @@ export function CanvasStage() {
   return (
     <div
       ref={containerRef}
-      className="flex-1 relative overflow-hidden bg-bg"
-      style={{ cursor }}
+      className="flex-1 relative overflow-auto bg-[#f4f4f4]"
+      style={{ cursor, touchAction: 'none', scrollbarWidth: 'none' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
@@ -631,13 +649,26 @@ export function CanvasStage() {
         </>
       )}
 
+      {/* Scrollable document background */}
+      <div
+        className="absolute left-0 top-0"
+        style={{
+          width: Math.max(doc.width + 1600, 1800),
+          height: Math.max(doc.height + 1200, 1200),
+          background: '#f4f4f4',
+        }}
+      />
+
       {/* Canvas surface */}
       <div
         className="absolute origin-top-left"
         style={{
-          transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`,
+          left: pan.x,
+          top: pan.y,
           width: doc.width,
           height: doc.height,
+          transform: `scale(${zoom})`,
+          transformOrigin: 'top left',
         }}
       >
         {/* Drop shadow */}

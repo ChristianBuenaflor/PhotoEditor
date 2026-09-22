@@ -25,7 +25,19 @@ html, body, #root {
   color: var(--color-fg);
   font-family: var(--font-sans);
   overscroll-behavior: none;
+  overflow: hidden;
   -webkit-font-smoothing: antialiased;
+}
+
+body {
+  touch-action: none;
+}
+
+* {
+  scrollbar-width: none;
+}
+*::-webkit-scrollbar {
+  display: none;
 }
 
 button { cursor: pointer; }

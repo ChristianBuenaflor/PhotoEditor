@@ -316,9 +316,13 @@ export default function App() {
       if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
       if (mod && e.key === 'a') { e.preventDefault(); handleCommand('select:all'); return; }
       if (mod && e.key === 'd') { e.preventDefault(); handleCommand('select:deselect'); return; }
-      if (mod && e.key === '+') { e.preventDefault(); setZoom(zoom * 1.25); return; }
-      if (mod && e.key === '-') { e.preventDefault(); setZoom(zoom / 1.25); return; }
-      if (mod && e.key === '0') { e.preventDefault(); handleCommand('view:fit-on-screen'); return; }
+      if (mod && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_' || e.key === '0')) {
+        e.preventDefault();
+        if (e.key === '+' || e.key === '=') { setZoom(zoom * 1.25); }
+        else if (e.key === '-' || e.key === '_') { setZoom(zoom / 1.25); }
+        else { handleCommand('view:fit-on-screen'); }
+        return;
+      }
       if (mod) return;
       const map: Record<string, string> = {
         v: 'move', m: 'marquee-rect', l: 'lasso', w: 'wand', c: 'crop',
