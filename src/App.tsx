@@ -17,7 +17,9 @@ import type { FilterName } from './lib/filters';
 export default function App() {
   const [showNewDoc, setShowNewDoc] = useState(false);
   const [filterDialog, setFilterDialog] = useState<FilterName | null>(null);
+  const [showCanvasSize, setShowCanvasSize] = useState(false);
   const [showAbout, setShowAbout] = useState(true);
+  const [isDraggingFile, setIsDraggingFile] = useState(false);
 
   const undo = useEditor((s) => s.undo);
   const redo = useEditor((s) => s.redo);
@@ -44,6 +46,18 @@ export default function App() {
   const mergeDown = useEditor((s) => s.mergeDown);
   const flattenAll = useEditor((s) => s.flattenAll);
   const bakeAdjustments = useEditor((s) => s.bakeAdjustments);
+
+  const importImageFile = useCallback((file: File) => {
+    if (!file.type.startsWith('image/')) return;
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = () => {
+      addLayer({ name: file.name.replace(/\.[^.]+$/, ''), fromImage: img });
+      URL.revokeObjectURL(url);
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  }, [addLayer]);
 
   const handleCommand = useCallback((cmd: string) => {
     const active = layers.find((l) => l.id === activeId);
@@ -187,13 +201,7 @@ export default function App() {
         break;
       }
       case 'image:canvas-size': {
-        const w = prompt('New width (px):', String(doc.width));
-        const h = prompt('New height (px):', String(doc.height));
-        if (w && h) {
-          const nw = Math.max(1, Number(w));
-          const nh = Math.max(1, Number(h));
-          useEditor.getState().resizeDocument(nw, nh);
-        }
+        setShowCanvasSize(true);
         break;
       }
       case 'image:trim-transparent': {
@@ -327,8 +335,32 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [undo, redo, setTool, swapColors, setZoom, zoom, handleCommand]);
 
+  const handleDropFiles = useCallback((files: FileList | null) => {
+    const file = files?.[0];
+    if (!file) return;
+    importImageFile(file);
+  }, [importImageFile]);
+
   return (
-    <div className="h-screen w-screen flex flex-col overflow-hidden">
+    <div
+      className={`h-screen w-screen flex flex-col overflow-hidden ${isDraggingFile ? 'ring-2 ring-accent ring-inset' : ''}`}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        setIsDraggingFile(true);
+      }}
+      onDragLeave={(e) => {
+        const related = e.relatedTarget as Node | null;
+        if (!related || !e.currentTarget.contains(related)) {
+          setIsDraggingFile(false);
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        setIsDraggingFile(false);
+        handleDropFiles(e.dataTransfer.files);
+      }}
+    >
       <TopBar onCommand={handleCommand} />
       <OptionsBar />
       <div className="flex-1 flex overflow-hidden">
@@ -346,7 +378,72 @@ export default function App() {
       <StatusBar />
       {showNewDoc && <NewDocDialog onClose={() => setShowNewDoc(false)} />}
       {filterDialog && <FilterDialog filter={filterDialog} onClose={() => setFilterDialog(null)} />}
+      {showCanvasSize && <CanvasSizeDialog onClose={() => setShowCanvasSize(false)} />}
       {showAbout && <WelcomeOverlay onClose={() => setShowAbout(false)} onNew={() => { setShowAbout(false); setShowNewDoc(true); }} />}
+    </div>
+  );
+}
+
+function CanvasSizeDialog({ onClose }: { onClose: () => void }) {
+  const doc = useEditor((s) => s.doc);
+  const resizeDocument = useEditor((s) => s.resizeDocument);
+  const [width, setWidth] = useState(doc.width);
+  const [height, setHeight] = useState(doc.height);
+
+  const apply = () => {
+    const nw = Math.max(1, Number(width) || doc.width);
+    const nh = Math.max(1, Number(height) || doc.height);
+    resizeDocument(nw, nh);
+    onClose();
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 grid place-items-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div
+        className="w-[540px] bg-panel border border-border-strong rounded-xl shadow-2xl overflow-hidden"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="px-6 py-5 border-b border-border">
+          <h2 className="font-serif text-[20px] leading-none">Canvas Size</h2>
+        </div>
+        <div className="p-6 space-y-5">
+          <label className="block space-y-2">
+            <span className="text-[10px] uppercase tracking-wider text-fg-dim font-mono">New width (px)</span>
+            <input
+              autoFocus
+              type="number"
+              min={1}
+              value={width}
+              onChange={(e) => setWidth(Number(e.target.value))}
+              className="w-full h-12 rounded-md border border-border bg-transparent px-3 text-lg outline-none focus:border-accent"
+            />
+          </label>
+          <label className="block space-y-2">
+            <span className="text-[10px] uppercase tracking-wider text-fg-dim font-mono">New height (px)</span>
+            <input
+              type="number"
+              min={1}
+              value={height}
+              onChange={(e) => setHeight(Number(e.target.value))}
+              className="w-full h-12 rounded-md border border-border bg-transparent px-3 text-lg outline-none focus:border-accent"
+            />
+          </label>
+          <div className="flex justify-end gap-3 pt-2">
+            <button
+              onClick={onClose}
+              className="px-5 py-2.5 rounded-full text-sm font-mono text-fg-dim hover:text-fg transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={apply}
+              className="px-5 py-2.5 rounded-full text-sm font-mono bg-accent text-bg hover:bg-accent-2 hover:text-fg transition-colors"
+            >
+              OK
+            </button>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

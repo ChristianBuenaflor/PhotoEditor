@@ -82,7 +82,7 @@ input[type="number"]:focus, input[type="text"]:focus, select:focus {
   border-color: #e8873b;
 }
 input[type="number"] {
-  width: 56px;
+  width: 100px;
 }
 
 .checker {

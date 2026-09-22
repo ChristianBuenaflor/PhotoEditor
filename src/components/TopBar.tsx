@@ -38,6 +38,7 @@ export function TopBar({ onCommand }: { onCommand: (cmd: string) => void }) {
       addLayer({ name: file.name.replace(/\.[^.]+$/, ''), fromImage: img });
       URL.revokeObjectURL(url);
     };
+    img.onerror = () => URL.revokeObjectURL(url);
     img.src = url;
     e.target.value = '';
   };

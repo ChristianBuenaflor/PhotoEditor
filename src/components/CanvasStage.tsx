@@ -14,6 +14,17 @@ interface DragState {
   points?: { x: number; y: number }[];
 }
 
+type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se';
+
+interface TransformDragState {
+  handle: ResizeHandle;
+  source: HTMLCanvasElement;
+  originX: number;
+  originY: number;
+  originW: number;
+  originH: number;
+}
+
 export function CanvasStage() {
   const doc = useEditor((s) => s.doc);
   const layers = useEditor((s) => s.layers);
@@ -41,6 +52,7 @@ export function CanvasStage() {
   const overlayRef = useRef<HTMLCanvasElement>(null);
 
   const [drag, setDrag] = useState<DragState | null>(null);
+  const [transformDrag, setTransformDrag] = useState<TransformDragState | null>(null);
   const [pendingSel, setPendingSel] = useState<Selection | null>(null);
   const [textEdit, setTextEdit] = useState<{ x: number; y: number; value: string } | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
@@ -128,6 +140,21 @@ export function CanvasStage() {
   );
 
   const activeLayer = layers.find((l) => l.id === activeId);
+
+  const beginTransformResize = useCallback((handle: ResizeHandle, e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const layer = useEditor.getState().layers.find((l) => l.id === activeId);
+    if (!layer || layer.locked) return;
+    setTransformDrag({
+      handle,
+      source: layer.canvas,
+      originX: layer.x,
+      originY: layer.y,
+      originW: layer.canvas.width,
+      originH: layer.canvas.height,
+    });
+  }, [activeId]);
 
   const drawBrushStroke = useCallback(
     (from: { x: number; y: number }, to: { x: number; y: number }, erase: boolean) => {
@@ -359,6 +386,49 @@ export function CanvasStage() {
   const onPointerMove = (e: React.PointerEvent) => {
     const p = toDoc(e.clientX, e.clientY);
     setCursorPos(p);
+
+    if (transformDrag && activeLayer) {
+      const { handle, source, originX, originY, originW, originH } = transformDrag;
+      const anchorX = handle.includes('w') ? originX + originW : originX;
+      const anchorY = handle.includes('n') ? originY + originH : originY;
+      const rawW = Math.abs(handle.includes('w') ? anchorX - p.x : p.x - anchorX);
+      const rawH = Math.abs(handle.includes('n') ? anchorY - p.y : p.y - anchorY);
+      const minSize = 10;
+
+      let nextW = Math.max(minSize, rawW);
+      let nextH = Math.max(minSize, rawH);
+
+      if (e.shiftKey) {
+        const aspect = originW / originH;
+        const scale = Math.max(nextW / originW, nextH / originH);
+        nextW = Math.max(minSize, originW * scale);
+        nextH = Math.max(minSize, originH * scale);
+        if (aspect >= 1) {
+          nextH = nextW / aspect;
+        } else {
+          nextW = nextH * aspect;
+        }
+      }
+
+      const nextX = handle.includes('w') ? anchorX - nextW : anchorX;
+      const nextY = handle.includes('n') ? anchorY - nextH : anchorY;
+
+      const nextCanvas = document.createElement('canvas');
+      nextCanvas.width = nextW;
+      nextCanvas.height = nextH;
+      const ctx = nextCanvas.getContext('2d')!;
+      ctx.clearRect(0, 0, nextW, nextH);
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(source, 0, 0, originW, originH, 0, 0, nextW, nextH);
+
+      updateLayer(activeLayer.id, {
+        x: nextX,
+        y: nextY,
+        canvas: nextCanvas,
+      });
+      return;
+    }
+
     if (!drag) return;
 
     if (tool === 'hand' || e.buttons === 4) {
@@ -435,6 +505,11 @@ export function CanvasStage() {
 
   const onPointerUp = (e: React.PointerEvent) => {
     const p = toDoc(e.clientX, e.clientY);
+    if (transformDrag) {
+      pushHistory('Resize Layer');
+      setTransformDrag(null);
+      return;
+    }
     if (drag) {
       if (tool === 'move' && activeLayer) {
         pushHistory('Move Layer');
@@ -487,9 +562,19 @@ export function CanvasStage() {
       const newZoom = Math.max(0.05, Math.min(16, zoom * factor));
       setZoom(newZoom);
       setPan({ x: cx - dx * newZoom, y: cy - dy * newZoom });
-    } else {
-      setPan({ x: pan.x - e.deltaX, y: pan.y - e.deltaY });
+      return;
     }
+
+    if (tool === 'move' && activeLayer && !activeLayer.locked) {
+      const deltaX = e.shiftKey ? -e.deltaY : e.deltaX;
+      if (deltaX !== 0) {
+        e.preventDefault();
+        updateLayer(activeLayer.id, { x: activeLayer.x + deltaX / zoom });
+        return;
+      }
+    }
+
+    setPan({ x: pan.x - e.deltaX, y: pan.y - e.deltaY });
   };
 
   const commitText = () => {
@@ -601,6 +686,40 @@ export function CanvasStage() {
           />
         )}
       </div>
+
+      {/* Layer resize handles */}
+      {tool === 'move' && activeLayer && !activeLayer.locked && (
+        <>
+          <div
+            className="absolute border border-[#e8873b] pointer-events-none"
+            style={{
+              left: activeLayer.x * zoom + pan.x,
+              top: activeLayer.y * zoom + pan.y,
+              width: activeLayer.canvas.width * zoom,
+              height: activeLayer.canvas.height * zoom,
+            }}
+          />
+          {(['nw', 'ne', 'sw', 'se'] as ResizeHandle[]).map((handle) => {
+            const x = activeLayer.x + (handle.includes('e') ? activeLayer.canvas.width : 0);
+            const y = activeLayer.y + (handle.includes('s') ? activeLayer.canvas.height : 0);
+            const px = x * zoom + pan.x;
+            const py = y * zoom + pan.y;
+            return (
+              <div
+                key={handle}
+                data-handle={handle}
+                onPointerDown={(e) => beginTransformResize(handle, e)}
+                className="absolute w-3 h-3 border-2 border-[#151515] bg-[#e8873b] shadow-[0_0_0_1px_rgba(255,255,255,0.6)] z-10 cursor-nwse-resize"
+                style={{
+                  left: px - 6,
+                  top: py - 6,
+                  cursor: handle.includes('n') ? (handle.includes('w') ? 'nw-resize' : 'ne-resize') : (handle.includes('w') ? 'sw-resize' : 'se-resize'),
+                }}
+              />
+            );
+          })}
+        </>
+      )}
 
       {/* Brush cursor preview */}
       {cursorPos && ['brush', 'eraser', 'pencil', 'blur', 'dodge', 'burn'].includes(tool) && (
