@@ -8,26 +8,29 @@ const BLEND_MODES = [
 ];
 
 const TOOL_LABELS: Record<string, string> = {
-  'move': 'Move',
-  'marquee-rect': 'Rectangular Marquee',
-  'marquee-ellipse': 'Elliptical Marquee',
-  'lasso': 'Lasso',
-  'wand': 'Magic Wand',
-  'crop': 'Crop',
-  'eyedropper': 'Eyedropper',
-  'brush': 'Brush',
-  'pencil': 'Pencil',
-  'eraser': 'Eraser',
-  'bucket': 'Paint Bucket',
-  'text': 'Text',
-  'shape-rect': 'Rectangle',
-  'shape-ellipse': 'Ellipse',
-  'shape-line': 'Line',
-  'blur': 'Blur',
-  'dodge': 'Dodge',
-  'burn': 'Burn',
-  'hand': 'Hand',
-  'zoom': 'Zoom',
+  'move': 'Move Tool (V)',
+  'marquee-rect': 'Rectangular Marquee Tool (M)',
+  'marquee-ellipse': 'Elliptical Marquee Tool (Shift+M)',
+  'lasso': 'Lasso Tool (L)',
+  'wand': 'Magic Wand Tool (W)',
+  'crop': 'Crop Tool (C)',
+  'eyedropper': 'Eyedropper Tool (I)',
+  'brush': 'Brush Tool (B)',
+  'pencil': 'Pencil Tool (Shift+B)',
+  'eraser': 'Eraser Tool (E)',
+  'bucket': 'Paint Bucket Tool (G)',
+  'gradient': 'Gradient Tool (Shift+G)',
+  'text': 'Horizontal Type Tool (T)',
+  'shape-rect': 'Rectangle Tool (U)',
+  'shape-ellipse': 'Ellipse Tool (Shift+U)',
+  'shape-line': 'Line Tool (Shift+U)',
+  'blur': 'Blur Tool (R)',
+  'sharpen': 'Sharpen Tool (Shift+R)',
+  'smudge': 'Smudge Tool (Shift+R)',
+  'dodge': 'Dodge Tool (O)',
+  'burn': 'Burn Tool (Shift+O)',
+  'hand': 'Hand Tool (H / Space)',
+  'zoom': 'Zoom Tool (Z)',
 };
 
 export function OptionsBar() {
@@ -35,7 +38,7 @@ export function OptionsBar() {
   const brush = useEditor((s) => s.brush);
   const setBrush = useEditor((s) => s.setBrush);
 
-  const isPaint = ['brush', 'pencil', 'eraser', 'blur', 'dodge', 'burn'].includes(tool);
+  const isPaint = ['brush', 'pencil', 'eraser', 'blur', 'sharpen', 'smudge', 'dodge', 'burn'].includes(tool);
   const isShape = ['shape-rect', 'shape-ellipse', 'shape-line'].includes(tool);
 
   return (
@@ -128,7 +131,16 @@ export function OptionsBar() {
         <span>Drag to select. Hold Shift for square/circle. ⌘A selects all, ⌘D deselects.</span>
       )}
       {tool === 'bucket' && (
-        <span>Click to fill. Uses foreground color with 32px tolerance.</span>
+        <span>Click to fill. Uses foreground color with 32px tolerance. Shift+G for Gradient.</span>
+      )}
+      {tool === 'gradient' && (
+        <span>Drag to draw Foreground → Background gradient. Shift+G toggles Paint Bucket.</span>
+      )}
+      {(tool === 'blur' || tool === 'sharpen' || tool === 'smudge') && (
+        <span>Drag to paint effect. Strength follows Opacity. Shift+R cycles Blur / Sharpen / Smudge.</span>
+      )}
+      {(tool === 'dodge' || tool === 'burn') && (
+        <span>Drag to lighten (Dodge) / darken (Burn). Shift+O to cycle.</span>
       )}
       <div className="flex-1" />
     </div>

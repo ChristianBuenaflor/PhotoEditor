@@ -57,7 +57,7 @@ export function CanvasStage() {
   const [textEdit, setTextEdit] = useState<{ x: number; y: number; value: string } | null>(null);
   const [cursorPos, setCursorPos] = useState<{ x: number; y: number } | null>(null);
 
-  // Fit on mount / when doc changes
+  // Fit on mount / when doc changes (pan is the canvas screen offset)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -66,22 +66,63 @@ export function CanvasStage() {
     const availH = el.clientHeight - pad;
     const z = Math.min(1, Math.min(availW / doc.width, availH / doc.height));
     setZoom(z);
-    const nextPan = {
+    setPan({
       x: (el.clientWidth - doc.width * z) / 2,
       y: (el.clientHeight - doc.height * z) / 2,
-    };
-    setPan(nextPan);
-    el.scrollLeft = nextPan.x;
-    el.scrollTop = nextPan.y;
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc.width, doc.height]);
 
+  // Photoshop-style wheel: Ctrl/Cmd (+ Alt) + wheel = zoom at cursor,
+  // plain wheel = pan, Shift + wheel = horizontal pan.
+  // Pan is applied to canvas offset state only (container is overflow-hidden,
+  // not natively scrolled) so scroll position can never fight the pan offset.
+  // Must be a native non-passive listener — React's onWheel is passive and
+  // preventDefault() inside it cannot reliably take over scrolling.
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    el.scrollLeft = pan.x;
-    el.scrollTop = pan.y;
-  }, [pan]);
+    const handleNativeWheel = (e: WheelEvent) => {
+      const s = useEditor.getState();
+      if (e.ctrlKey || e.metaKey || e.altKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
+        const rect = el.getBoundingClientRect();
+        const cx = e.clientX - rect.left;
+        const cy = e.clientY - rect.top;
+        const dx = (cx - s.pan.x) / s.zoom;
+        const dy = (cy - s.pan.y) / s.zoom;
+        const newZoom = Math.max(0.05, Math.min(16, s.zoom * factor));
+        s.setZoom(newZoom);
+        s.setPan({ x: cx - dx * newZoom, y: cy - dy * newZoom });
+        return;
+      }
+      // Viewport pan only — never move layer content (Photoshop behavior).
+      e.preventDefault();
+      e.stopPropagation();
+      let dx = e.deltaX;
+      let dy = e.deltaY;
+      if (e.deltaMode === 1) {
+        dx *= 16;
+        dy *= 16;
+      } else if (e.deltaMode === 2) {
+        dx *= 400;
+        dy *= 400;
+      }
+      if (e.shiftKey && Math.abs(e.deltaX) < Math.abs(e.deltaY)) {
+        // Vertical wheel + Shift => horizontal pan (trackpads may already
+        // report horizontal deltas, in which case keep them as-is).
+        dx = dy;
+        dy = 0;
+      }
+      // Match native scroll direction: wheel down moves the viewport down,
+      // so the canvas screen offset moves up.
+      s.setPan({ x: s.pan.x - dx, y: s.pan.y - dy });
+    };
+    el.addEventListener('wheel', handleNativeWheel, { passive: false });
+    return () => el.removeEventListener('wheel', handleNativeWheel);
+  }, []);
 
   // Composite all layers to display canvas
   useEffect(() => {
@@ -210,10 +251,11 @@ export function CanvasStage() {
   );
 
   const drawEffectStroke = useCallback(
-    (from: { x: number; y: number }, to: { x: number; y: number }, kind: 'blur' | 'dodge' | 'burn') => {
+    (from: { x: number; y: number }, to: { x: number; y: number }, kind: 'blur' | 'sharpen' | 'smudge' | 'dodge' | 'burn') => {
       if (!activeLayer || activeLayer.locked) return;
       const ctx = activeLayer.canvas.getContext('2d')!;
       const r = brush.size / 2;
+      const strength = Math.max(0.05, Math.min(1, brush.opacity / 100));
       const steps = Math.max(1, Math.ceil(Math.hypot(to.x - from.x, to.y - from.y) / (r * 0.5)));
       for (let i = 0; i <= steps; i++) {
         const t = i / steps;
@@ -227,24 +269,33 @@ export function CanvasStage() {
         try {
           const img = ctx.getImageData(x, y, w, h);
           const d = img.data;
-          if (kind === 'blur') {
+          if (kind === 'blur' || kind === 'sharpen' || kind === 'smudge') {
             // simple box blur
             const src = new Uint8ClampedArray(d);
             const iw = w;
             for (let py = 1; py < h - 1; py++) {
               for (let px = 1; px < iw - 1; px++) {
-                for (let ch = 0; ch < 4; ch++) {
+                for (let ch = 0; ch < 3; ch++) {
                   let sum = 0;
                   for (let ky = -1; ky <= 1; ky++)
                     for (let kx = -1; kx <= 1; kx++)
                       sum += src[((py + ky) * iw + (px + kx)) * 4 + ch];
-                  d[(py * iw + px) * 4 + ch] = sum / 9;
+                  const blurred = sum / 9;
+                  const origIdx = (py * iw + px) * 4 + ch;
+                  const orig = src[origIdx];
+                  let next = orig;
+                  if (kind === 'blur') next = orig + (blurred - orig) * strength;
+                  else if (kind === 'sharpen') next = orig + (orig - blurred) * strength * 1.5;
+                  else next = orig + (blurred - orig) * strength * 0.6; // smudge: gentle blend
+                  d[origIdx] = Math.max(0, Math.min(255, next));
                 }
               }
             }
           } else {
-            const amt = kind === 'dodge' ? 8 : -8;
+            const base = kind === 'dodge' ? 10 : -10;
+            const amt = base * strength;
             for (let p = 0; p < d.length; p += 4) {
+              if (d[p + 3] === 0) continue;
               d[p] = Math.max(0, Math.min(255, d[p] + amt));
               d[p + 1] = Math.max(0, Math.min(255, d[p + 1] + amt));
               d[p + 2] = Math.max(0, Math.min(255, d[p + 2] + amt));
@@ -255,8 +306,34 @@ export function CanvasStage() {
       }
       bumpPaintTick();
     },
-    [activeLayer, brush.size, bumpPaintTick],
+    [activeLayer, brush.size, brush.opacity, bumpPaintTick],
   );
+
+  const drawGradient = useCallback((
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+  ) => {
+    if (!activeLayer || activeLayer.locked) return;
+    if (Math.hypot(end.x - start.x, end.y - start.y) < 2) return;
+    const ctx = activeLayer.canvas.getContext('2d')!;
+    ctx.save();
+    if (selection) {
+      ctx.beginPath();
+      if (selection.shape === 'rect') ctx.rect(selection.x, selection.y, selection.w, selection.h);
+      else ctx.ellipse(selection.x + selection.w / 2, selection.y + selection.h / 2, Math.abs(selection.w / 2), Math.abs(selection.h / 2), 0, 0, Math.PI * 2);
+      ctx.clip();
+    }
+    ctx.globalAlpha = brush.opacity / 100;
+    const g = ctx.createLinearGradient(start.x - activeLayer.x, start.y - activeLayer.y, end.x - activeLayer.x, end.y - activeLayer.y);
+    const s = useEditor.getState();
+    g.addColorStop(0, s.foreground);
+    g.addColorStop(1, s.background);
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+    ctx.restore();
+    bumpPaintTick();
+    pushHistory('Gradient');
+  }, [activeLayer, selection, brush.opacity, bumpPaintTick, pushHistory]);
 
   const sampleColor = useCallback((x: number, y: number) => {
     const c = displayCanvasRef.current;
@@ -380,9 +457,15 @@ export function CanvasStage() {
       return;
     }
 
-    if (tool === 'blur' || tool === 'dodge' || tool === 'burn') {
+    if (tool === 'blur' || tool === 'sharpen' || tool === 'smudge' || tool === 'dodge' || tool === 'burn') {
       drawEffectStroke(p, p, tool);
       setDrag({ startX: p.x, startY: p.y, lastX: p.x, lastY: p.y });
+      return;
+    }
+
+    if (tool === 'gradient') {
+      setDrag({ startX: p.x, startY: p.y, lastX: p.x, lastY: p.y });
+      setPendingSel({ x: p.x, y: p.y, w: 0, h: 0, shape: 'rect' });
       return;
     }
 
@@ -495,8 +578,20 @@ export function CanvasStage() {
       return;
     }
 
-    if (tool === 'blur' || tool === 'dodge' || tool === 'burn') {
+    if (tool === 'blur' || tool === 'sharpen' || tool === 'smudge' || tool === 'dodge' || tool === 'burn') {
       drawEffectStroke({ x: drag.lastX, y: drag.lastY }, p, tool);
+      setDrag({ ...drag, lastX: p.x, lastY: p.y });
+      return;
+    }
+
+    if (tool === 'gradient') {
+      setPendingSel({
+        x: Math.min(drag.startX, p.x),
+        y: Math.min(drag.startY, p.y),
+        w: Math.abs(p.x - drag.startX),
+        h: Math.abs(p.y - drag.startY),
+        shape: 'rect',
+      });
       setDrag({ ...drag, lastX: p.x, lastY: p.y });
       return;
     }
@@ -548,8 +643,10 @@ export function CanvasStage() {
           layers: newLayers,
         });
         pushHistory('Crop');
-      } else if (['brush', 'pencil', 'eraser', 'blur', 'dodge', 'burn'].includes(tool)) {
+      } else if (['brush', 'pencil', 'eraser', 'blur', 'sharpen', 'smudge', 'dodge', 'burn'].includes(tool)) {
         pushHistory(tool.charAt(0).toUpperCase() + tool.slice(1) + ' Stroke');
+      } else if (tool === 'gradient') {
+        drawGradient({ x: drag.startX, y: drag.startY }, p);
       } else if (['shape-rect', 'shape-ellipse', 'shape-line'].includes(tool)) {
         drawShape({ x: drag.startX, y: drag.startY }, p, true);
         pushHistory('Draw Shape');
@@ -557,43 +654,6 @@ export function CanvasStage() {
     }
     setDrag(null);
     setPendingSel(null);
-  };
-
-  const onWheel = (e: React.WheelEvent) => {
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault();
-      e.stopPropagation();
-      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15;
-      const el = containerRef.current!;
-      const rect = el.getBoundingClientRect();
-      const cx = e.clientX - rect.left;
-      const cy = e.clientY - rect.top;
-      const dx = (cx - pan.x) / zoom;
-      const dy = (cy - pan.y) / zoom;
-      const newZoom = Math.max(0.05, Math.min(16, zoom * factor));
-      setZoom(newZoom);
-      setPan({ x: cx - dx * newZoom, y: cy - dy * newZoom });
-      return;
-    }
-
-    const horizontalScroll = e.shiftKey || Math.abs(e.deltaX) > Math.abs(e.deltaY);
-
-    if (tool === 'move' && activeLayer && !activeLayer.locked && horizontalScroll) {
-      e.preventDefault();
-      const delta = e.shiftKey ? -e.deltaY : e.deltaX;
-      if (delta !== 0) {
-        updateLayer(activeLayer.id, { x: activeLayer.x + delta / zoom });
-      }
-      return;
-    }
-
-    if (horizontalScroll) {
-      e.preventDefault();
-      setPan({ x: pan.x - (e.deltaX || e.deltaY), y: pan.y });
-      return;
-    }
-
-    setPan({ x: pan.x - e.deltaX, y: pan.y - e.deltaY });
   };
 
   const commitText = () => {
@@ -624,23 +684,13 @@ export function CanvasStage() {
   return (
     <div
       ref={containerRef}
-      className="flex-1 relative overflow-auto bg-[#f4f4f4]"
-      style={{ cursor, touchAction: 'none', scrollbarWidth: 'none' }}
+      className="flex-1 relative overflow-hidden bg-[#282828]"
+      style={{ cursor, touchAction: 'none', scrollbarWidth: 'none', backgroundColor: '#282828' }}
       onPointerDown={onPointerDown}
       onPointerMove={onPointerMove}
       onPointerUp={onPointerUp}
-      onWheel={onWheel}
       onContextMenu={(e) => e.preventDefault()}
     >
-      {/* Dot grid background */}
-      <div
-        className="absolute inset-0 pointer-events-none opacity-40"
-        style={{
-          backgroundImage: 'radial-gradient(circle, #2d2720 1px, transparent 1px)',
-          backgroundSize: '18px 18px',
-        }}
-      />
-
       {/* Rulers */}
       {showRulers && (
         <>
@@ -650,13 +700,13 @@ export function CanvasStage() {
         </>
       )}
 
-      {/* Scrollable document background */}
+      {/* Scrollable document background — Photoshop-style dark pasteboard */}
       <div
         className="absolute left-0 top-0"
         style={{
           width: Math.max(doc.width + 1600, 1800),
           height: Math.max(doc.height + 1200, 1200),
-          background: '#f4f4f4',
+          background: '#282828',
         }}
       />
 
@@ -754,7 +804,7 @@ export function CanvasStage() {
       )}
 
       {/* Brush cursor preview */}
-      {cursorPos && ['brush', 'eraser', 'pencil', 'blur', 'dodge', 'burn'].includes(tool) && (
+      {cursorPos && ['brush', 'eraser', 'pencil', 'blur', 'sharpen', 'smudge', 'dodge', 'burn'].includes(tool) && (
         <div
           className="absolute pointer-events-none border border-fg mix-blend-difference rounded-full"
           style={{

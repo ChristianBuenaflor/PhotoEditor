@@ -13,6 +13,43 @@ const MENUS: { name: string; items: (string | '---')[] }[] = [
   { name: 'View', items: ['Zoom In', 'Zoom Out', 'Fit on Screen', 'Actual Size', '---', 'Toggle Rulers', 'Toggle Grid'] },
 ];
 
+const MENU_SHORTCUTS: Record<string, Record<string, string>> = {
+  File: {
+    'New…': 'Ctrl+N',
+    'Open…': 'Ctrl+O',
+    'Export as PNG': 'Ctrl+S',
+    'Export as JPG': 'Ctrl+Shift+S',
+  },
+  Edit: {
+    Undo: 'Ctrl+Z',
+    Redo: 'Ctrl+Shift+Z',
+    Cut: 'Ctrl+X',
+    Copy: 'Ctrl+C',
+    Paste: 'Ctrl+V',
+    'Fill Selection': 'Shift+F5',
+    'Clear Selection': 'Del',
+  },
+  Layer: {
+    'New Layer': 'Shift+Ctrl+N',
+    'Duplicate Layer': 'Ctrl+J',
+    'Merge Down': 'Ctrl+E',
+    'Flatten Image': 'Ctrl+Shift+E',
+  },
+  Select: {
+    All: 'Ctrl+A',
+    Deselect: 'Ctrl+D',
+    Inverse: 'Ctrl+Shift+I',
+    'Select Marquee': 'M',
+    'Select Ellipse': 'Shift+M',
+  },
+  View: {
+    'Zoom In': 'Ctrl++',
+    'Zoom Out': 'Ctrl+-',
+    'Fit on Screen': 'Ctrl+0',
+    'Actual Size': 'Ctrl+1',
+  },
+};
+
 export function TopBar({ onCommand }: { onCommand: (cmd: string) => void }) {
   const [open, setOpen] = useState<string | null>(null);
   const [closingTab, setClosingTab] = useState<string | null>(null);
@@ -21,7 +58,6 @@ export function TopBar({ onCommand }: { onCommand: (cmd: string) => void }) {
   const historyIndex = useEditor((s) => s.historyIndex);
   const history = useEditor((s) => s.history);
   const zoom = useEditor((s) => s.zoom);
-  const setZoom = useEditor((s) => s.setZoom);
   const layers = useEditor((s) => s.layers);
   const doc = useEditor((s) => s.doc);
   const documents = useEditor((s) => s.documents);
@@ -198,7 +234,7 @@ export function TopBar({ onCommand }: { onCommand: (cmd: string) => void }) {
               {open === m.name && (
                 <>
                   <div className="fixed inset-0 z-40" onClick={() => setOpen(null)} />
-                  <div className="absolute left-0 top-full min-w-[200px] bg-panel-2 border border-border-strong shadow-2xl z-50 py-1">
+                  <div className="absolute left-0 top-full min-w-[220px] bg-panel-2 border border-border-strong shadow-2xl z-50 py-1">
                     {m.items.map((it, i) =>
                       it === '---' ? (
                         <div key={i} className="h-px bg-border my-1" />
@@ -207,9 +243,12 @@ export function TopBar({ onCommand }: { onCommand: (cmd: string) => void }) {
                           key={i}
                           onClick={() => handleItem(m.name, it)}
                           disabled={(m.name === 'Edit' && it === 'Undo' && !canUndo) || (m.name === 'Edit' && it === 'Redo' && !canRedo)}
-                          className="w-full text-left px-3 py-1.5 text-[12px] text-fg hover:bg-accent hover:text-bg font-mono"
+                          className="w-full text-left px-3 py-1.5 text-[12px] text-fg hover:bg-accent hover:text-bg font-mono flex items-center justify-between gap-4"
                         >
-                          {it}
+                          <span>{it}</span>
+                          {MENU_SHORTCUTS[m.name]?.[it] && (
+                            <span className="text-[10px] opacity-60">{MENU_SHORTCUTS[m.name][it]}</span>
+                          )}
                         </button>
                       ),
                     )}
@@ -228,9 +267,9 @@ export function TopBar({ onCommand }: { onCommand: (cmd: string) => void }) {
             <Redo2 size={14} />
           </button>
           <div className="w-px h-4 bg-border mx-1" />
-          <button onClick={() => setZoom(zoom / 1.25)} className="px-2 py-0.5 text-[11px] text-fg-dim hover:text-fg font-mono">−</button>
+          <button onClick={() => onCommand('view:zoom-out')} title="Zoom Out (Ctrl+-)" className="px-2 py-0.5 text-[11px] text-fg-dim hover:text-fg font-mono">−</button>
           <span className="text-[11px] font-mono text-fg w-14 text-center">{Math.round(zoom * 100)}%</span>
-          <button onClick={() => setZoom(zoom * 1.25)} className="px-2 py-0.5 text-[11px] text-fg-dim hover:text-fg font-mono">+</button>
+          <button onClick={() => onCommand('view:zoom-in')} title="Zoom In (Ctrl++)" className="px-2 py-0.5 text-[11px] text-fg-dim hover:text-fg font-mono">+</button>
           <div className="w-px h-4 bg-border mx-1" />
           <button className="p-1.5 rounded hover:bg-panel-2 text-fg-dim">
             <Menu size={14} />

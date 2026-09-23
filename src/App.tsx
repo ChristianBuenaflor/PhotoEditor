@@ -30,7 +30,6 @@ export default function App() {
   const activeDocumentId = useEditor((s) => s.activeDocumentId);
   const setZoom = useEditor((s) => s.setZoom);
   const setPan = useEditor((s) => s.setPan);
-  const zoom = useEditor((s) => s.zoom);
   const toggleRulers = useEditor((s) => s.toggleRulers);
   const toggleGrid = useEditor((s) => s.toggleGrid);
   const setSelection = useEditor((s) => s.setSelection);
@@ -319,14 +318,27 @@ export default function App() {
         setTool('marquee-ellipse');
         break;
       case 'view:zoom-in':
-        setZoom(zoom * 1.25);
-        break;
       case 'view:zoom-out':
-        setZoom(zoom / 1.25);
+      case 'view:actual-size': {
+        // Photoshop-style: keyboard/menu zoom keeps the viewport center stable.
+        const el = (document.querySelector('[data-canvas-container] > div') ??
+          document.querySelector('[data-canvas-container]')) as HTMLElement | null;
+        const s = useEditor.getState();
+        const targetZoom =
+          cmd === 'view:zoom-in' ? s.zoom * 1.25 : cmd === 'view:zoom-out' ? s.zoom / 1.25 : 1;
+        if (!el) {
+          setZoom(targetZoom);
+          break;
+        }
+        const cx = el.clientWidth / 2;
+        const cy = el.clientHeight / 2;
+        const dx = (cx - s.pan.x) / s.zoom;
+        const dy = (cy - s.pan.y) / s.zoom;
+        const newZoom = Math.max(0.05, Math.min(16, targetZoom));
+        setZoom(newZoom);
+        setPan({ x: cx - dx * newZoom, y: cy - dy * newZoom });
         break;
-      case 'view:actual-size':
-        setZoom(1);
-        break;
+      }
       case 'view:fit-on-screen': {
         const container = document.querySelector('[data-canvas-container]') as HTMLElement | null;
         const el = container ?? document.body;
@@ -349,55 +361,146 @@ export default function App() {
           setFilterDialog(name);
         }
     }
-  }, [layers, activeId, selection, doc, fg, bg, zoom, addLayer, duplicateLayer, deleteLayer, mergeDown, flattenAll, bakeAdjustments, updateLayer, setSelection, setZoom, setPan, setTool, toggleRulers, toggleGrid, pushHistory, bumpPaintTick]);
+  }, [layers, activeId, selection, doc, fg, bg, addLayer, duplicateLayer, deleteLayer, mergeDown, flattenAll, bakeAdjustments, updateLayer, setSelection, setZoom, setPan, setTool, toggleRulers, toggleGrid, pushHistory, bumpPaintTick]);
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts — Photoshop CS6 style tool keys + Ctrl/Cmd combos
   useEffect(() => {
-    const handler = (e: KeyboardEvent) => {
-      const target = e.target as HTMLElement;
-      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) return;
-      const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
-      if (mod && (e.key === 'y' || (e.key === 'z' && e.shiftKey))) { e.preventDefault(); redo(); return; }
-      if (mod && e.key.toLowerCase() === 't') { e.preventDefault(); setTool('move'); return; }
-      if (mod && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); setShowSaveAs(true); return; }
-      if (mod && e.key === 'a') { e.preventDefault(); handleCommand('select:all'); return; }
-      if (mod && e.key === 'd') { e.preventDefault(); handleCommand('select:deselect'); return; }
-      if (mod && (e.key === '+' || e.key === '=' || e.key === '-' || e.key === '_' || e.key === '0')) {
-        e.preventDefault();
-        if (e.key === '+' || e.key === '=') { setZoom(zoom * 1.25); }
-        else if (e.key === '-' || e.key === '_') { setZoom(zoom / 1.25); }
-        else { handleCommand('view:fit-on-screen'); }
+    const zoomCentered = (factor: number) => {
+      const el = (document.querySelector('[data-canvas-container] > div') ??
+        document.querySelector('[data-canvas-container]')) as HTMLElement | null;
+      const s = useEditor.getState();
+      if (!el) {
+        s.setZoom(s.zoom * factor);
         return;
       }
-      if (mod) return;
-      const map: Record<string, string> = {
-        v: 'move', m: 'marquee-rect', l: 'lasso', w: 'wand', c: 'crop',
-        i: 'eyedropper', b: 'brush', n: 'pencil', e: 'eraser', g: 'bucket',
-        t: 'text', u: 'shape-rect', h: 'hand', z: 'zoom', r: 'blur',
-      };
-      if (map[e.key]) setTool(map[e.key] as never);
-      if (e.key === 'x') swapColors();
-      if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); handleCommand('edit:clear-selection'); }
-      if (e.key === '[') useEditor.getState().setBrush({ size: Math.max(1, useEditor.getState().brush.size - 2) });
-      if (e.key === ']') useEditor.getState().setBrush({ size: Math.min(500, useEditor.getState().brush.size + 2) });
+      const cx = el.clientWidth / 2;
+      const cy = el.clientHeight / 2;
+      const dx = (cx - s.pan.x) / s.zoom;
+      const dy = (cy - s.pan.y) / s.zoom;
+      const newZoom = Math.max(0.05, Math.min(16, s.zoom * factor));
+      s.setZoom(newZoom);
+      s.setPan({ x: cx - dx * newZoom, y: cy - dy * newZoom });
+    };
+    const cycleTool = (current: string, group: string[]) => {
+      const s = useEditor.getState();
+      if (!group.includes(s.tool)) return group[0];
+      const idx = group.indexOf(s.tool as never);
+      return group[(idx + 1) % group.length];
+    };
+    const handler = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement;
+      if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable) {
+        if (e.key === 'Escape') (target as HTMLInputElement).blur();
+        return;
+      }
+      const mod = e.metaKey || e.ctrlKey;
+      const k = e.key.toLowerCase();
+      // --- Ctrl/Cmd combos (Photoshop parity) ---
+      if (mod) {
+        if (k === 'z' && !e.shiftKey) { e.preventDefault(); undo(); return; }
+        if (k === 'y' || (k === 'z' && e.shiftKey)) { e.preventDefault(); redo(); return; }
+        if (k === 'n') { e.preventDefault(); handleCommand('file:new'); return; }
+        if (k === 'o') {
+          e.preventDefault();
+          (document.querySelector('input[type="file"][accept="image/*"]') as HTMLInputElement | null)?.click();
+          return;
+        }
+        if (k === 's' && !e.shiftKey) { e.preventDefault(); setShowSaveAs(true); return; }
+        if (k === 's' && e.shiftKey) { e.preventDefault(); setShowSaveAs(true); return; }
+        if (k === 'a') { e.preventDefault(); handleCommand('select:all'); return; }
+        if (k === 'd') { e.preventDefault(); handleCommand('select:deselect'); return; }
+        if (k === 'i' && e.shiftKey) { e.preventDefault(); handleCommand('select:inverse'); return; }
+        if (k === 'c' && !e.shiftKey) { e.preventDefault(); handleCommand('edit:copy'); return; }
+        if (k === 'x' && !e.shiftKey) { e.preventDefault(); handleCommand('edit:cut'); return; }
+        if (k === 'v' && !e.shiftKey) { e.preventDefault(); handleCommand('edit:paste'); return; }
+        if (k === 't') { e.preventDefault(); setTool('move'); return; }
+        if (k === 'e' && e.shiftKey) { e.preventDefault(); handleCommand('layer:flatten-image'); return; }
+        if (k === 'e' && !e.shiftKey) { e.preventDefault(); handleCommand('layer:merge-down'); return; }
+        if (k === 'j') {
+          e.preventDefault();
+          const st = useEditor.getState();
+          const active = st.layers.find((l) => l.id === st.activeLayerId);
+          if (active) st.duplicateLayer(active.id);
+          return;
+        }
+        const isPlus = e.key === '+' || e.key === '=' || e.code === 'NumpadAdd' || e.code === 'Equal';
+        const isMinus = e.key === '-' || e.key === '_' || e.code === 'NumpadSubtract' || e.code === 'Minus';
+        const isZero = e.key === '0' || e.code === 'Numpad0' || e.code === 'Digit0';
+        const isOne = e.key === '1' || e.code === 'Numpad1' || e.code === 'Digit1';
+        if (isPlus || isMinus || isZero || isOne) {
+          // Block the browser's own zoom (Ctrl+=/-/0) and apply canvas zoom instead.
+          e.preventDefault();
+          if (isPlus) { zoomCentered(1.25); }
+          else if (isMinus) { zoomCentered(1 / 1.25); }
+          else if (isZero) { handleCommand('view:fit-on-screen'); }
+          else { handleCommand('view:actual-size'); }
+          return;
+        }
+        return;
+      }
+      // --- Single-key tools (Photoshop letters, Shift cycles groups) ---
+      const st = useEditor.getState();
+      switch (k) {
+        case 'v': setTool('move'); return;
+        case 'm': setTool(cycleTool(st.tool, ['marquee-rect', 'marquee-ellipse']) as never); return;
+        case 'l': setTool('lasso'); return;
+        case 'w': setTool('wand'); return;
+        case 'c': setTool('crop'); return;
+        case 'i': setTool('eyedropper'); return;
+        case 'b': setTool(cycleTool(st.tool, ['brush', 'pencil']) as never); return;
+        case 'e': setTool('eraser'); return;
+        case 'g': setTool(cycleTool(st.tool, ['bucket', 'gradient']) as never); return;
+        case 'r': setTool(cycleTool(st.tool, ['blur', 'sharpen', 'smudge']) as never); return;
+        case 'o': setTool(cycleTool(st.tool, ['dodge', 'burn']) as never); return;
+        case 't': setTool('text'); return;
+        case 'u': setTool(cycleTool(st.tool, ['shape-rect', 'shape-ellipse', 'shape-line']) as never); return;
+        case 'h': setTool('hand'); return;
+        case 'z': setTool('zoom'); return;
+        case 'd':
+          st.setForeground('#000000');
+          st.setBackground('#ffffff');
+          return;
+        case 'x': swapColors(); return;
+      }
+      if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); handleCommand('edit:clear-selection'); return; }
+      if (e.key === 'Escape') { handleCommand('select:deselect'); return; }
+      if (e.key === '[') {
+        if (e.shiftKey) st.setBrush({ hardness: Math.max(0, st.brush.hardness - 10) });
+        else st.setBrush({ size: Math.max(1, st.brush.size - 2) });
+        return;
+      }
+      if (e.key === ']') {
+        if (e.shiftKey) st.setBrush({ hardness: Math.min(100, st.brush.hardness + 10) });
+        else st.setBrush({ size: Math.min(500, st.brush.size + 2) });
+        return;
+      }
+      // Space = temporary hand pan handled by CanvasStage via tool switch is out of scope;
+      // H remains the persistent Hand tool.
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [undo, redo, setTool, swapColors, setZoom, zoom, handleCommand]);
+  }, [undo, redo, setTool, swapColors, handleCommand]);
 
   useEffect(() => {
+    // Fallback guard: block the browser's own page zoom when Ctrl/Cmd+wheel
+    // happens outside the canvas (over panels, menus, etc.). Zoom inside the
+    // canvas is handled by CanvasStage's non-passive listener, which calls
+    // stopPropagation so this handler won't double-fire there.
     const onWindowWheel = (e: WheelEvent) => {
       if (!(e.ctrlKey || e.metaKey)) return;
       e.preventDefault();
-      const currentZoom = useEditor.getState().zoom;
-      const factor = e.deltaY < 0 ? 1.12 : 1 / 1.12;
-      const nextZoom = Math.min(16, Math.max(0.05, currentZoom * factor));
-      useEditor.getState().setZoom(nextZoom);
     };
+    // Safari trackpad pinch fires gesture events that also zoom the page.
+    const onGesture = (e: Event) => e.preventDefault();
 
     window.addEventListener('wheel', onWindowWheel, { passive: false });
-    return () => window.removeEventListener('wheel', onWindowWheel);
+    window.addEventListener('gesturestart', onGesture);
+    window.addEventListener('gesturechange', onGesture);
+    return () => {
+      window.removeEventListener('wheel', onWindowWheel);
+      window.removeEventListener('gesturestart', onGesture);
+      window.removeEventListener('gesturechange', onGesture);
+    };
   }, []);
 
   const handleDropFiles = useCallback((files: FileList | null) => {
@@ -687,18 +790,27 @@ function WelcomeOverlay({ onClose, onNew }: { onClose: () => void; onNew: () => 
           </p>
         </div>
         <div className="grid grid-cols-3 gap-4 p-6 text-xs font-mono text-fg-dim">
-          <div><span className="text-accent">V</span> Move</div>
-          <div><span className="text-accent">M</span> Marquee</div>
-          <div><span className="text-accent">L</span> Lasso</div>
-          <div><span className="text-accent">B</span> Brush</div>
+          <div><span className="text-accent">V</span> Move / Ctrl+T transform</div>
+          <div><span className="text-accent">M / Shift+M</span> Marquee rect/ellipse</div>
+          <div><span className="text-accent">L</span> Lasso / <span className="text-accent">W</span> Wand</div>
+          <div><span className="text-accent">C</span> Crop / <span className="text-accent">I</span> Eyedropper</div>
+          <div><span className="text-accent">B / Shift+B</span> Brush / Pencil</div>
           <div><span className="text-accent">E</span> Eraser</div>
-          <div><span className="text-accent">G</span> Bucket</div>
-          <div><span className="text-accent">T</span> Text</div>
-          <div><span className="text-accent">U</span> Shape</div>
-          <div><span className="text-accent">I</span> Eyedropper</div>
-          <div><span className="text-accent">Z</span> Zoom</div>
-          <div><span className="text-accent">⌘Z</span> Undo</div>
-          <div><span className="text-accent">⌘⇧Z</span> Redo</div>
+          <div><span className="text-accent">G / Shift+G</span> Bucket / Gradient</div>
+          <div><span className="text-accent">R + Shift</span> Blur / Sharpen / Smudge</div>
+          <div><span className="text-accent">O + Shift</span> Dodge / Burn</div>
+          <div><span className="text-accent">T</span> Type / <span className="text-accent">U</span> Shapes</div>
+          <div><span className="text-accent">D / X</span> Default / Swap colors</div>
+          <div><span className="text-accent">[ ]</span> Brush size / <span className="text-accent">Shift+[ ]</span> Hardness</div>
+          <div><span className="text-accent">H / Space</span> Hand / <span className="text-accent">Z</span> Zoom</div>
+          <div><span className="text-accent">Ctrl+N / O / S</span> New / Open / Save</div>
+          <div><span className="text-accent">Ctrl+A / D</span> Select / Deselect</div>
+          <div><span className="text-accent">Ctrl+C / X / V</span> Copy / Cut / Paste</div>
+          <div><span className="text-accent">Ctrl+J / E</span> Duplicate / Merge</div>
+          <div><span className="text-accent">Ctrl+Z</span> Undo / <span className="text-accent">Ctrl+Shift+Z</span> Redo</div>
+          <div><span className="text-accent">Ctrl++ / −</span> Zoom in/out</div>
+          <div><span className="text-accent">Ctrl+0 / 1</span> Fit / 100%</div>
+          <div><span className="text-accent">Del</span> Clear / <span className="text-accent">Esc</span> Deselect</div>
         </div>
         <div className="px-6 pb-6 flex gap-2 justify-end">
           <button
